@@ -1,4 +1,5 @@
-import urllib.parse
-url = "https://golestan.iust.ac.ir/forms/authenticateuser/main.htm"
-p = urllib.parse.urlsplit(url)
-print(p)
+import ipaddress
+flag = ipaddress.ip_address("example.com")
+
+if flag:
+    print(flag , "استفاده از آدرس IP مستقیم به جای نام دامنه (رفتار به شدت مشکوک کلاهبرداران)") 

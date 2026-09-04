@@ -3,21 +3,35 @@ import aiohttp
 import asyncio
 import ssl
 import re
+import ipaddress
 from bs4 import BeautifulSoup
+
+def is_valid_ip(ip_str):
+    try:
+        ipaddress.ip_address(ip_str)
+        return True
+    except ValueError:
+
+        return False
+#برای اینکه هربار با صدا کردن تابع ساخته نشه
+target_keywords = ['sana', 'eadl', 'sahamedalat', 'shaparak', 'enamad', 'maliyat']
 
 async def check_enamad(url):
 
     parsed_url = urllib.parse.urlparse(url)
     current_domain = parsed_url.netloc.lower()
     
+    # ip_pattern = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$")
+    # if ip_pattern.match(current_domain):
+    #     return True, "استفاده از آدرس IP مستقیم به جای نام دامنه (رفتار به شدت مشکوک کلاهبرداران)"
 
-    ip_pattern = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$")
-    if ip_pattern.match(current_domain):
+    flag = is_valid_ip(current_domain)
+    if(flag):
         return True, "استفاده از آدرس IP مستقیم به جای نام دامنه (رفتار به شدت مشکوک کلاهبرداران)"
 
     domain_parts = current_domain.split('.')
-    if len(domain_parts) > 3:
-        target_keywords = ['sana', 'eadl', 'sahamedalat', 'shaparak', 'enamad', 'maliyat']
+    max_normal_domain_parts = 3
+    if len(domain_parts) > max_normal_domain_parts:
         if any(kw in current_domain for kw in target_keywords):
             return True, "جعل نام سامانه‌های دولتی در ساب‌دامینِ یک سایت نامعتبر"
         return True, f"استفاده از ساب‌دامین‌های تو در تو و غیرعادی ({len(domain_parts)} بخش)"
