@@ -43,8 +43,7 @@ async def check_enamad(url):
     warnings = []
 
     parsed_url = urllib.parse.urlparse(url)
-    current_domain = parsed_url.netloc.lower()
-
+    current_domain = (parsed_url.hostname or '').lower()
     # _________________________________step 1
     # checking if is it an ip
     flag = is_ip(current_domain)
