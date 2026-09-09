@@ -15,7 +15,7 @@ def is_ip(ip_str):
 
 #برای اینکه هربار با صدا کردن تابع ساخته نشه
 target_keywords = ['sana', 'eadl', 'sahamedalat', 'shaparak', 'enamad', 'maliyat']
-
+worker = "https://hello-world.noranobinary-2f1.workers.dev/"
 
 async def has_ssl(domain):
     """
@@ -74,11 +74,11 @@ async def check_enamad(url):
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
+    proxy = worker + url
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=heads, ssl=ctx, timeout=7, allow_redirects=True) as res:
-
+            async with session.get(proxy , headers = heads , ssl = ctx , timeout = 10 , allow_redirects= True) as res:
                 if res.status != 200:
                     return True, f"سرور سایت خطای {res.status} داد."
 
@@ -120,7 +120,8 @@ async def check_enamad(url):
                         return True, _combine("لینک اینماد به آدرس نامعتبر هدایت می‌شود.", warnings)
 
                     try:
-                        async with session.get(enamad_href, headers=heads, ssl=ctx, timeout=7) as enamad_res:
+                        var = worker + enamad_href
+                        async with session.get(var, headers=heads, ssl=ctx, timeout=10) as enamad_res:
                             if enamad_res.status == 200:
                                 enamad_html = await enamad_res.text()
                                 enamad_soup = BeautifulSoup(enamad_html, 'html.parser')
