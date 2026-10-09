@@ -1,0 +1,28 @@
+# Optional Linux service. Place the revised project at /opt/anti-phishing-robot.
+# Create a dedicated non-root user named radar, install its virtual environment,
+# set .env, and give radar ownership of the project (including data/ and logs/).
+# Edit User, Group, WorkingDirectory and ExecStart to match your server.
+# Then copy this file to /etc/systemd/system/ and run:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now anti-phishing-robot
+#   sudo systemctl status anti-phishing-robot
+# Stop any manual polling process before enabling this service.
+[Unit]
+Description=Iran Phishing Radar Telegram Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=radar
+Group=radar
+WorkingDirectory=/opt/anti-phishing-robot
+ExecStart=/opt/anti-phishing-robot/.venv/bin/python main_bot.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

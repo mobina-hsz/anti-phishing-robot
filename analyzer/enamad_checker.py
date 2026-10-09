@@ -1,175 +1,110 @@
-import urllib.parse
-import aiohttp
-import asyncio
-import ssl
+"""Inspect trust-seal links without treating missing seals as proof of phishing."""
+
 import re
-import ipaddress
+from urllib.parse import urljoin, urlsplit
+
 from bs4 import BeautifulSoup
 
-def is_ip(ip_str):
-    try:
-        ipaddress.ip_address(ip_str)
-        return True
-    except ValueError:
-        return False
+from analyzer.http_client import Fetcher, FetchError, normalize_url
+from analyzer.models import CheckResult, Page, Status
 
-#برای اینکه هربار با صدا کردن تابع ساخته نشه
-target_keywords = ['sana', 'eadl', 'sahamedalat', 'shaparak', 'enamad', 'maliyat']
-worker = "https://hello-world.noranobinary-2f1.workers.dev/"
-
-async def has_ssl(domain):
-    """
-    فقط چک می‌کنه سایت روی HTTPS بالا میاد یا نه (وجودش، نه اعتبارش).
-    """
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(domain, 443, ssl=ctx),
-            timeout=5
-        )
-        writer.close()
-        await writer.wait_closed()
-        return True
-    except Exception:
-        return False
+TRUST_HOST = "trustseal.enamad.ir"
+SENSITIVE_WORDS = ("درگاه پرداخت", "سامانه ثنا", "سهام عدالت", "ابلاغیه", "شاپرک", "یارانه")
 
 
-async def check_enamad(url):
+def host_matches(text: str, host: str) -> bool:
+    host = host.removeprefix("www.")
+    return bool(re.search(r"(?<![\w.-])(?:www\.)?" + re.escape(host) + r"(?![\w.-])", text, re.I))
 
-    # این لیست همه‌ی اخطارهایی که در طول بررسی جمع میشن رو نگه می‌داره
-    # هر بخش می‌تونه بهش اضافه کنه بدون اینکه تابع رو متوقف کنه
+
+async def check_enamad(page: Page, fetcher: Fetcher) -> CheckResult:
+    """Return heuristic evidence, not an official license or safety certification."""
+    soup = BeautifulSoup(page.text, "html.parser")
+    text = soup.get_text(" ", strip=True)
     warnings = []
+    if urlsplit(page.url).scheme == "http":
+        warnings.append("صفحه با HTTP و بدون رمزنگاری دریافت شد؛ این به‌تنهایی اثبات فیشینگ نیست.")
+    sensitive = any(word in text for word in SENSITIVE_WORDS)
+    base = soup.find("base", href=True)
+    base_url = urljoin(page.url, str(base["href"])) if base else page.url
+    images = soup.find_all("img", src=re.compile("enamad", re.I))
+    links = []
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor["href"])
+        if anchor.find("img", src=re.compile("enamad", re.I)) or "trustseal.enamad" in href.lower():
+            links.append(href)
+    if images and not links:
+        warnings.append(
+            "تصویر اینماد دیده شد ولی لینک قابل بررسی پیدا نشد؛ ممکن است پیوند با جاوااسکریپت باز شود."
+        )
+    if not links:
+        if sensitive:
+            warnings.append(
+                "محتوای حساس دیده شد. نبود اینماد در سامانه‌های دولتی الزاماً غیرعادی نیست."
+            )
+        return CheckResult(
+            Status.NOT_DETECTED, "نشانه مشخصی از جعل لینک اینماد پیدا نشد.", tuple(warnings)
+        )
 
-    parsed_url = urllib.parse.urlparse(url)
-    current_domain = (parsed_url.hostname or '').lower()
-    # _________________________________step 1
-    # checking if is it an ip
-    flag = is_ip(current_domain)
-    if flag:
-        return True, "استفاده از آدرس IP مستقیم به جای نام دامنه (رفتار به شدت مشکوک کلاهبرداران)"
-
-    # _________________________________step 2
-    # checking how many parts does its domain have
-    domain_parts = current_domain.split('.')
-    max_normal_domain_parts = 3
-    if len(domain_parts) > max_normal_domain_parts:
-        if any(kw in current_domain for kw in target_keywords):
-            return True, "جعل نام سامانه‌های دولتی در ساب‌دامینِ یک سایت نامعتبر"
-        return True, f"استفاده از ساب‌دامین‌های تو در تو و غیرعادی ({len(domain_parts)} بخش)"
-
-    # _________________________________step 2.5
-    ssl_exists = await has_ssl(current_domain)
-    if not ssl_exists:
-        warnings.append("سایت فاقد گواهی SSL است (سیگنال ضعیف اما قابل توجه).")
-
-    # __________________________________step 3
-
-    heads = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    proxy = worker + url
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(proxy , headers = heads , ssl = ctx , timeout = 10 , allow_redirects= True) as res:
-                if res.status != 200:
-                    return True, f"سرور سایت خطای {res.status} داد."
-
-                html = await res.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                page_text = soup.get_text()
-
-                persian_chars_pattern = re.compile(r'[\u0600-\u06FF]')
-                has_persian = bool(persian_chars_pattern.search(page_text))
-
-                if not has_persian and not current_domain.endswith('.ir'):
-                    return False, "این یک وب‌سایت بین‌المللی است و محتوای مرتبط با فیشینگ داخلی ندارد."
-
-                target_words_fa = ['درگاه پرداخت', 'سامانه ثنا', 'سهام عدالت', 'ابلاغیه الکترونیکی قضایی', 'شاپرک', 'یارانه']
-                page_text_lower = page_text.lower()
-                is_sensitive_page = any(w in page_text_lower for w in target_words_fa)
-
-                enamad_imgs = soup.find_all('img', src=re.compile(r'enamad', re.I))
-                enamad_links = soup.find_all('a', href=re.compile(r'enamad', re.I))
-
-                if is_sensitive_page and not enamad_imgs and not enamad_links:
-                    return True, _combine("صفحه حساس است اما هیچ نماد اعتمادی ندارد.", warnings)
-
-                if enamad_imgs and not enamad_links:
-                    return True, _combine("لوگوی اینماد به صورت عکسِ نمایشی و جعلی قرار داده شده است.", warnings)
-
-                if not enamad_links:
-                    # اینجا نتیجه فعلی False هست، ولی اگه warning داشته باشیم بهتره گزارش بشه
-                    if warnings:
-                        return True, _combine("سایت فارسی است و نشانه‌ای از اینماد پیدا نشد.", warnings)
-                    return False, "سایت فارسی است اما نشانه خاصی از درگاه یا اینماد در آن پیدا نشد."
-
-                enamad_verified = False
-
-                for a in enamad_links:
-                    enamad_href = a.get('href', '')
-
-                    if 'trustseal.enamad.ir' not in enamad_href.lower():
-                        return True, _combine("لینک اینماد به آدرس نامعتبر هدایت می‌شود.", warnings)
-
-                    try:
-                        var = worker + enamad_href
-                        async with session.get(var, headers=heads, ssl=ctx, timeout=10) as enamad_res:
-                            if enamad_res.status == 200:
-                                enamad_html = await enamad_res.text()
-                                enamad_soup = BeautifulSoup(enamad_html, 'html.parser')
-                                enamad_page_text = enamad_soup.get_text().lower()
-
-                                clean_current_domain = current_domain.replace('www.', '')
-
-                                if clean_current_domain in enamad_page_text:
-                                    enamad_verified = True
-                                    break
-                                else:
-                                    return True, _combine(
-                                        f"جعل اینماد! مجوز موجود متعلق به دامنه دیگری است و ربطی به {clean_current_domain} ندارد.",
-                                        warnings
-                                    )
-                            else:
-                                return True, _combine(
-                                    f"سرور مرجع اینماد پاسخ نداد (خطای {enamad_res.status}). اعتبار سایت قابل تایید نیست.",
-                                    warnings
-                                )
-                    except Exception as e:
-                        return True, _combine(
-                            f"ارتباط با سرور اینماد برای بررسی دامنه قطع شد ({type(e).__name__}). بنابراین اعتبار سایت رد می‌شود.",
-                            warnings
-                        )
-
-                if enamad_links and not enamad_verified:
-                    return True, _combine("لینک اینماد در سایت وجود دارد اما توسط سرور رسمی تایید نشد.", warnings)
-
-                # اگه به اینجا رسیدیم یعنی همه بررسی‌های اصلی پاس شدن
-                # ولی اگه warning جمع شده باشه (مثلاً نبود SSL)، اون رو هم گزارش می‌کنیم
-                if warnings:
-                    return True, _combine(
-                        "وضعیت اینماد و تطبیق دامنه معتبر است، اما موارد زیر هم مشاهده شد:",
-                        warnings
-                    )
-
-                return False, "وضعیت اینماد، تطبیق دامنه و پاسخگویی سرور نرمال و کاملاً معتبر است."
-
-    except asyncio.TimeoutError:
-        return True, _combine("پاسخی از سرور دریافت نشد (Timeout).", warnings)
-
-    except Exception as e:
-        return True, _combine(f"خطای شبکه در دسترسی به سایت. دلیل: {type(e).__name__}", warnings)
-
-
-def _combine(main_message, warnings):
-    """پیام اصلی رو با لیست warning ها ترکیب می‌کنه تا یک متن نهایی خوانا بشه."""
-    if not warnings:
-        return main_message
-    warning_text = " | ".join(warnings)
-    return f"{main_message} (اخطارهای اضافی: {warning_text})"
+    host = urlsplit(page.url).hostname or ""
+    inconclusive = False
+    verified = False
+    if len(set(links)) > 3:
+        inconclusive = True
+        warnings.append("به دلیل محدودیت منابع، فقط سه لینک متمایز اینماد بررسی شد.")
+    for href in list(dict.fromkeys(links))[:3]:
+        try:
+            seal_url = normalize_url(urljoin(base_url, href))
+        except FetchError:
+            inconclusive = True
+            warnings.append("پیوند نماد قابل دریافت و بررسی نیست.")
+            continue
+        parsed = urlsplit(seal_url)
+        if parsed.hostname != TRUST_HOST:
+            return CheckResult(
+                Status.SUSPICIOUS,
+                "لینک نشان اینماد به میزبان رسمی trustseal.enamad.ir اشاره نمی‌کند.",
+                tuple(warnings),
+            )
+        if parsed.scheme != "https" or parsed.port not in {None, 443}:
+            inconclusive = True
+            warnings.append("پیوند نماد از HTTPS استاندارد استفاده نمی‌کند.")
+            continue
+        try:
+            seal = await fetcher.get(seal_url, allowed_host=TRUST_HOST)
+        except FetchError:
+            inconclusive = True
+            warnings.append("مرجع اینماد قابل بررسی نبود؛ این خطا اثبات جعل نیست.")
+            continue
+        seal_text = BeautifulSoup(seal.text, "html.parser").get_text(" ", strip=True).lower()
+        # Exact hostname boundaries prevent shop.ir from matching fake-shop.ir or shop.ir.evil.test.
+        if host_matches(seal_text, host):
+            verified = True
+            continue
+        domain_field = re.search(
+            r"(?:دامنه|آدرس\s*(?:وب\s*)?سایت|website|domain)\s*[:：]?\s*"
+            r"(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})",
+            seal_text,
+            re.I,
+        )
+        if domain_field and not host_matches(domain_field.group(1), host):
+            return CheckResult(
+                Status.SUSPICIOUS,
+                "دامنه درج‌شده در صفحه نماد با دامنه این سایت تطابق ندارد.",
+                tuple(warnings),
+            )
+        inconclusive = True
+        warnings.append(
+            "دامنه سایت در محتوای قابل خواندن مرجع نماد تأیید نشد؛ صفحه ممکن است پویا یا محدود شده باشد."
+        )
+    if inconclusive:
+        return CheckResult(
+            Status.INCONCLUSIVE, "بررسی همه پیوندهای اینماد کامل نشد.", tuple(warnings)
+        )
+    if verified:
+        return CheckResult(
+            Status.NOT_DETECTED,
+            "دامنه در صفحه مرجع نماد دیده شد؛ این به‌تنهایی امنیت کل سایت را تضمین نمی‌کند.",
+            tuple(warnings),
+        )
+    return CheckResult(Status.INCONCLUSIVE, "اعتبار پیوند نماد قابل بررسی نبود.", tuple(warnings))
